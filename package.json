@@ -1,0 +1,17 @@
+{
+	"name": "com.cratesmith.scriptexecutionorder",
+	"displayName": "Cratesmith.ScriptExecutionOrder",
+	"description": "A dependency based script execution order manager for Unity3d. ",
+	"version": "0.0.1",
+	"unity": "2018.3",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Cratesmith/Cratesmith.ScriptExecutionOrder.git"
+	},
+	"src": "Packages/Cratesmith.ScriptExecutionOrder",
+	"author": "Kieran Lord <cratesmith@cratesmith.com> (https://github.com/cratesmith)",
+	"dependencies": {
+		"com.cratesmith.utils": "https://github.com/Cratesmith/Cratesmith.Utils#0.0.1-develop"
+	}
+}
