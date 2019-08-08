@@ -1,7 +1,6 @@
 {
     "name": "Cratesmith.ScriptExecutionOrder.Tests",
     "references": [
-        "cratesmith.runtimeutils",
         "Cratesmith.Utils",
         "Cratesmith.ScriptExecutionOrder"
     ],
