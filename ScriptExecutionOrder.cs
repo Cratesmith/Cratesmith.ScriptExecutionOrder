@@ -1,13 +1,19 @@
-﻿//#define LOG_DEBUG
+﻿#define SORT_EXECUTION_ORDER
+#define AUTO_SCRIPT_EXECUTION_ORDER
+//#define SORT_ON_ASSETIMPORTER // only use if SORT_ON_SCRIPT_RELOAD is giving issues. May take a second recompile to see changes
+#define SORT_ON_SCRIPT_RELOAD
+#define LOG_DEBUG
 //#define LOG_DEBUG_VERBOSE
 
 using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using UnityEditor;
 using UnityEngine;
+using System.Collections.Generic;
+using Type = System.Type;
+
+#if UNITY_EDITOR
+using UnityEditor;
+using System.Linq;
+#endif
 
 namespace Cratesmith.ScriptExecutionOrder
 {
@@ -17,12 +23,17 @@ namespace Cratesmith.ScriptExecutionOrder
     [System.AttributeUsage(System.AttributeTargets.Class)]
     public class ScriptExecutionOrderAttribute : System.Attribute 
     {
-        public readonly int order;
-        public ScriptExecutionOrderAttribute(int order)
-        {
-            this.order = order;
-        }
-    } 
+	    public readonly int order;
+	    public ScriptExecutionOrderAttribute(int order)
+	    {
+		    this.order = order;
+	    }
+    }
+
+    public abstract class ScriptExecuteAttribute : System.Attribute
+    {
+        public abstract Type RelativeTo { get; }
+    }
 
     /// <summary>
     /// Ensures that this script will execute after all scripts of the specified type.
@@ -30,23 +41,69 @@ namespace Cratesmith.ScriptExecutionOrder
     /// This respects order values set by ScriptExecutionOrderAttribute, and will show a warning if that's not possible.
     /// </summary>
     [System.AttributeUsage(System.AttributeTargets.Class, AllowMultiple = true)]
-    public class ScriptDependencyAttribute : System.Attribute
+    public class ScriptExecuteAfterAttribute : ScriptExecuteAttribute
     {
-        public readonly Type scriptDependencyType;
-        public ScriptDependencyAttribute(Type type)
+        public ScriptExecuteAfterAttribute(Type type)
         {
-            this.scriptDependencyType = type;
+            ExecuteAfter = type;
         }   
+        public Type ExecuteAfter { get; private set; }
 
-        public virtual Type[] GetScriptDependencies()
-        {
-            return new Type[] {scriptDependencyType};
-        }
+        public override Type RelativeTo => ExecuteAfter;
     }
-   
-#if UNITY_EDITOR 
+
+    /// <summary>
+    /// Ensures that this script will execute before all scripts of the specified type.
+    /// Exection order for all scripts in a dependency chain are automatically assigned.
+    /// This respects order values set by ScriptExecutionOrderAttribute, and will show a warning if that's not possible.
+    /// </summary>
+    [System.AttributeUsage(System.AttributeTargets.Class, AllowMultiple = true)]
+    public class ScriptExecuteBeforeAttribute : ScriptExecuteAttribute
+    {
+        public ScriptExecuteBeforeAttribute(Type type)
+        {
+            ExecuteBefore = type;
+        }
+
+        public Type ExecuteBefore { get; private set; }
+        public override Type RelativeTo => ExecuteBefore;
+
+    }
+       
+    #if UNITY_EDITOR && AUTO_SCRIPT_EXECUTION_ORDER
     public static class ScriptExecutionOrder
     {
+        const string EDITORPREFS_ScriptOrdersChanged = "ScriptExecutionOrder.ScriptOrdersChanged";
+        public static bool PrefsScriptOrdersChanged
+        {
+            get => EditorPrefs.GetBool(EDITORPREFS_ScriptOrdersChanged, false);
+            private set { EditorPrefs.SetBool(EDITORPREFS_ScriptOrdersChanged, value);}
+        }
+
+        const string EDITORPREFS_LastLoadTime = "ScriptExecutionOrder.LastLoadTime";
+        public static float PrefsLastLoadTime
+        {
+            get => EditorPrefs.GetFloat(EDITORPREFS_LastLoadTime, 0f);
+            private set { EditorPrefs.SetFloat(EDITORPREFS_LastLoadTime, value);}
+        }
+
+        [InitializeOnLoadMethod]
+        static void CheckForEditorStartup()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode
+                || EditorApplication.timeSinceStartup > PrefsLastLoadTime)
+            {
+                return;
+            }
+
+            PrefsScriptOrdersChanged = false;
+            PrefsLastLoadTime = (float)EditorApplication.timeSinceStartup;
+    #if !SORT_ON_SCRIPT_RELOAD
+            ProcessAll();
+    #endif
+        }
+
+        #if SORT_ON_ASSETIMPORTER
         public class Builder : UnityEditor.AssetPostprocessor
         {
             static void OnPostprocessAllAssets (string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths) 
@@ -54,15 +111,32 @@ namespace Cratesmith.ScriptExecutionOrder
                 if(importedAssets
                     .Concat(movedAssets)
                     .Concat(deletedAssets)
-                    .Any(x=> x.EndsWith(".cs") || x.EndsWith(".js")))
+                    .Any(x=> AssetImporter.GetAtPath(x) is MonoImporter))
                 {
-                    ScriptExecutionOrder.ProcessAll();
+                    PrefsScriptOrdersChanged = false;
+                    ProcessAll();
                 }
             }
         }
-     
-        //[UnityEditor.Callbacks.DidReloadScripts(CallbackOrder.SCRIPT_EXECUTION_ORDER)]
-        //[UnityEditor.Callbacks.DidReloadScripts(-999)]
+        #endif
+
+        #if SORT_ON_SCRIPT_RELOAD
+        [UnityEditor.Callbacks.DidReloadScripts(-999)]
+        static void ScriptReload()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode) return;
+
+            if (PrefsScriptOrdersChanged)
+            {
+                PrefsScriptOrdersChanged = false;
+                Debug.Log("ScriptExecutionOrder: Reloading scripts after an order change, not sorting in case we're in a loop");
+                return;
+            }
+
+            ProcessAll();
+        }
+        #endif
+
         static void ProcessAll()
         {
             var fixedOrders = new Dictionary<UnityEditor.MonoScript, int>();
@@ -77,7 +151,7 @@ namespace Cratesmith.ScriptExecutionOrder
                 }
                 allScripts.Add(script);
             }
-             
+                 
             var scriptOrders = new Dictionary<UnityEditor.MonoScript, int>();
             var sortedDeps = SortDependencies(allScripts.ToArray());
             for(int i=0;i<sortedDeps.Count; ++i)
@@ -110,14 +184,14 @@ namespace Cratesmith.ScriptExecutionOrder
                     continue;
                 }
 
-#if LOG_DEBUG            
-            Debug.Log("ScriptExectionOrder: Island:"+i+" starts at "+newDepOrder
-                +" Scripts:"+string.Join(", ", currentIsland
-                    .Select(x=>(fixedOrders.ContainsKey(x.script) 
-                        ? (x.script.name+"[fixed="+fixedOrders[x.script]+"]")
-                        : x.script.name)+"(isLeaf="+x.isLeaf+")")
-                    .ToArray()));
-#endif
+    #if LOG_DEBUG            
+                Debug.Log("ScriptExecutionOrder: Island:"+i+" starts at "+newDepOrder
+                    +" Scripts:"+string.Join(", ", currentIsland
+                        .Select(x=>(fixedOrders.ContainsKey(x.script) 
+                            ? (x.script.name+"[fixed="+fixedOrders[x.script]+"]")
+                            : x.script.name)+"(isLeaf="+x.isLeaf+")")
+                        .ToArray()));
+    #endif
 
 
                 // 
@@ -139,9 +213,9 @@ namespace Cratesmith.ScriptExecutionOrder
                     } 
                     else if(fixedOrders.Count==0)
                     {                  
-                        // Try to put the leaves on script order 0 if possible, and keep others in the range [-currentIsland.Lenght,0]
-                        // This just keeps the script execution order window clean and readable and avoids outliers
-                        // TODO: improve this by calculating the real range of the island instead of using -currentIsland.Length
+					    // Try to put the leaves on script order 0 if possible, and keep others in the range [-currentIsland.Lenght,0]
+					    // This just keeps the script execution order window clean and readable and avoids outliers
+					    // TODO: improve this by calculating the real range of the island instead of using -currentIsland.Length
                         newDepOrder = isLeaf && !currentIsland.Skip(j+1).Any(x=>x.isLeaf)
                             ? Mathf.Max(0, newDepOrder) 
                             : Mathf.Max(-currentIsland.Length, newDepOrder);
@@ -171,19 +245,20 @@ namespace Cratesmith.ScriptExecutionOrder
                     try
                     {
                         scriptOrderChanged = true;
-                        Debug.LogFormat("Script order changed. Script:{0} PrevOrder:{1} NewOrder:{2}", script.name, currentOrder, order);
+                        Debug.LogFormat("ScriptExecutionOrder: Order changed. Script:{0} PrevOrder:{1} NewOrder:{2}", script.name, currentOrder, order);
                         UnityEditor.MonoImporter.SetExecutionOrder(script, order);
                     }
                     catch (Exception e)
                     {                    
-                        Debug.LogErrorFormat("Script:{0} Order:{1} Error:{2}", script!=null ? script.name:"<null>", order, e);
+                        Debug.LogErrorFormat("ScriptExecutionOrder: :{0} Order:{1} Error:{2}", script!=null ? script.name:"<null>", order, e);
                     }
                 }
             }
 
             if (scriptOrderChanged)
             {
-                Debug.Log("Script one or more orders changed. Unity will trigger a recompile");            
+                Debug.Log("ScriptExecutionOrder: One or more orders changed. Unity will trigger a recompile");
+                PrefsScriptOrdersChanged = true;
             }
         }    
 
@@ -199,13 +274,13 @@ namespace Cratesmith.ScriptExecutionOrder
 
             // sort input (to ensure we're deterministic and to ensure order of fixed items)
             Array.Sort(scriptsToSort, (x, y) => {
-                var xOrder = 0; GetFixedOrder(x, out xOrder);
-                var yOrder = 0; GetFixedOrder(y, out yOrder);
+	            var xOrder = 0; GetFixedOrder(x, out xOrder);
+	            var yOrder = 0; GetFixedOrder(y, out yOrder);
 
-                var result = xOrder.CompareTo(yOrder);
-                if (result != 0) return result;
+	            var result = xOrder.CompareTo(yOrder);
+	            if (result != 0) return result;
 
-                return x.GetHashCode().CompareTo(y.GetHashCode());
+	            return x.GetHashCode().CompareTo(y.GetHashCode());
             });
 
             // add everything to lookup
@@ -223,9 +298,8 @@ namespace Cratesmith.ScriptExecutionOrder
                 if(script==null) continue;
                 if(!HasDependencies(script)) continue;
                 var deps = GetScriptDependencies(scriptsToSort[i]);
-                for(int j=0; j < deps.Length; ++j)
+                foreach(var depType in deps)
                 {
-                    var depType = deps[j];
                     if(depType==null) continue;
 
                     MonoScript depScript = null;
@@ -238,7 +312,7 @@ namespace Cratesmith.ScriptExecutionOrder
                         connections[script] = forwardSet = new HashSet<MonoScript>();
                     }
                     forwardSet.Add(depScript);
-                
+                    
                     // reverse
                     HashSet<UnityEditor.MonoScript> reverseSet = null;
                     if (!connections.TryGetValue(depScript, out reverseSet))
@@ -255,10 +329,10 @@ namespace Cratesmith.ScriptExecutionOrder
                 var script = scriptsToSort[i];
                 if(script==null) continue;
                 if(!HasFixedOrder(script)) continue;            
-                SortDependencies_Visit(script, visited, sortedItems, lookup, null, connections);
+	            SortDependencies_Visit(script, visited, sortedItems, lookup, null, connections);
             }
-		 
-            // non-leaves 
+		     
+	        // non-leaves 
             for(int i=0;i<scriptsToSort.Length;++i) 
             {
                 var script = scriptsToSort[i];
@@ -266,7 +340,7 @@ namespace Cratesmith.ScriptExecutionOrder
 
                 HashSet<MonoScript> connectionSet = null;
                 if (connections.TryGetValue(script, out connectionSet) 
-                    && GetScriptDependencies(script).Length == connections[script].Count)
+                    && GetScriptDependencies(script).Count == connections[script].Count)
                 {
                     continue;               
                 }
@@ -281,7 +355,7 @@ namespace Cratesmith.ScriptExecutionOrder
                 if(script==null || !HasDependencies(script)) continue;
                 SortDependencies_Visit(script, visited, sortedItems, lookup, null, connections);
             }
-         
+             
 
             //Debug.Log("ScriptExecutionOrder: Sorted dependencies: "+string.Join(", ",sortedItems.Select(x=>x.name).ToArray()));
             return SortDependencies_CreateGraphIslands(sortedItems, connections);
@@ -319,7 +393,7 @@ namespace Cratesmith.ScriptExecutionOrder
                         foreach (var connection in currentConnections)
                         {
                             // leaves are scripts that no other scripts depend on
-                            if(GetScriptDependencies(current).Length == currentConnections.Count)
+                            if(GetScriptDependencies(current).Count == currentConnections.Count)
                             {
                                 leaves.Add(current);
                             }
@@ -355,7 +429,7 @@ namespace Cratesmith.ScriptExecutionOrder
             Dictionary<Type, UnityEditor.MonoScript> lookup,
             UnityEditor.MonoScript visitedBy,
             Dictionary<UnityEditor.MonoScript, HashSet<UnityEditor.MonoScript>> connections
-        )
+            )
         {            
             if(visited.Add(current))  
             {  
@@ -365,36 +439,36 @@ namespace Cratesmith.ScriptExecutionOrder
                 // 1. all dependencies are sorted
                 // 2. cyclic dependencies can be caught if an item is visited AND it's been added to this list
                 var depsRemaining = GetScriptDependencies(current);
-             
+                 
                 var visitedFrom = current;
 
                 // do deps with fixed orders first
-                for(int i=0;i<depsRemaining.Length; ++i)
+                foreach (var dep in depsRemaining)
                 {
-                    SortDependencies_Visit_VisitDependency(visited, sortedItems, lookup, connections, depsRemaining[i], visitedFrom,
+                    SortDependencies_Visit_VisitDependency(visited, sortedItems, lookup, connections, dep, visitedFrom,
                         true,
                         false);
                 }
 
                 // then non-leaves
-                for(int i=0;i<depsRemaining.Length; ++i)
+                foreach (var dep in depsRemaining)
                 {
-                    SortDependencies_Visit_VisitDependency(visited, sortedItems, lookup, connections, depsRemaining[i], visitedFrom,
+                    SortDependencies_Visit_VisitDependency(visited, sortedItems, lookup, connections, dep, visitedFrom,
                         false,
                         false);
                 }
 
                 // then any leaves
-                for(int i=0;i<depsRemaining.Length; ++i)
+                foreach (var dep in depsRemaining)
                 {
-                    SortDependencies_Visit_VisitDependency(visited, sortedItems, lookup, connections, depsRemaining[i], visitedFrom,
+                    SortDependencies_Visit_VisitDependency(visited, sortedItems, lookup, connections, dep, visitedFrom,
                         false,
                         true);
                 }
 
-#if LOG_DEBUG_VERBOSE
-            Debug.Log("Sorted "+current.name);
-#endif
+    #if LOG_DEBUG_VERBOSE
+                Debug.Log("Sorted "+current.name);
+    #endif
                 sortedItems.Add( current ); 
             } 
             else
@@ -407,7 +481,7 @@ namespace Cratesmith.ScriptExecutionOrder
             Dictionary<MonoScript, HashSet<MonoScript>> connections, Type depType, MonoScript visitedFrom, bool fixedOrderDeps, bool leafDeps)
         {
             if (depType == null) return;
-        
+            
             if (!typeof(ScriptableObject).IsAssignableFrom(depType) &&
                 !typeof(MonoBehaviour).IsAssignableFrom(depType))
             {
@@ -418,7 +492,7 @@ namespace Cratesmith.ScriptExecutionOrder
             if (!lookup.TryGetValue(depType, out depScript))
             {
                 Debug.LogError("ScriptDependency type " + depType.Name + " not found found for script " + visitedFrom.name +
-                               "! Check that it exists in a file with the same name as the class");
+                    "! Check that it exists in a file with the same name as the class");
                 return;
             }
 
@@ -430,7 +504,7 @@ namespace Cratesmith.ScriptExecutionOrder
             HashSet<MonoScript> connectionSet = null;
             if (leafDeps 
                 && connections.TryGetValue(depScript, out connectionSet)
-                && GetScriptDependencies(depScript).Length != connectionSet.Count)
+                && GetScriptDependencies(depScript).Count != connectionSet.Count)
             {
                 return;               
             }
@@ -446,7 +520,7 @@ namespace Cratesmith.ScriptExecutionOrder
         /// </summary>
         static bool HasDependencies(UnityEditor.MonoScript script)
         {
-            return GetScriptDependencies(script).Length > 0;
+            return GetScriptDependencies(script).Count > 0;
         }
 
         /// <summary>
@@ -461,51 +535,77 @@ namespace Cratesmith.ScriptExecutionOrder
         /// <summary>
         /// Get the dependencies for a script using the lookup table
         /// </summary>
-        private static Dictionary<MonoScript, Type[]> s_dependencyAttributes = new Dictionary<MonoScript, Type[]>();
+        private static Dictionary<MonoScript, HashSet<Type>> s_scriptDependencies = null;
         private static Dictionary<Type, Type[]> s_compatibleTypes = null;
-        static Type[] GetScriptDependencies( UnityEditor.MonoScript script)
+        private static Dictionary<Type, MonoScript> s_scriptLookup = null;
+
+        static HashSet<Type> GetScriptDependencies( UnityEditor.MonoScript script)
         {
-            if(script==null) return new Type[0];
+            if(script==null) return new HashSet<Type>();
 
             var currentType = script.GetClass();
-            if(currentType==null) return new Type[0];
+            if(currentType==null) return new HashSet<Type>();
 
-            if (s_compatibleTypes == null)
+            if (s_compatibleTypes == null || s_scriptDependencies == null)
             {
                 var scriptsToSort = MonoImporter.GetAllRuntimeMonoScripts()
-                    .Select(x => x.GetClass())
-                    .Where(x => x != null)
-                    .Distinct()
+                    .Where(x => x != null && x.GetClass()!=null)
+                    .GroupBy(x=>x.GetClass())
+                    .Select(x=>x.FirstOrDefault())
                     .ToArray();
 
-                s_compatibleTypes = scriptsToSort.ToDictionary(
-                    x => x, 
-                    x => scriptsToSort.Where(x.IsAssignableFrom).ToArray()); 
+                if (s_compatibleTypes == null)
+                {
+                    s_compatibleTypes = scriptsToSort.ToDictionary(
+                        x => x.GetClass(), 
+                        x => scriptsToSort.Select(y=>y.GetClass()).Where(x.GetClass().IsAssignableFrom).ToArray()); 
+                }
+
+                if (s_scriptLookup == null)
+                {
+                    s_scriptLookup = scriptsToSort.ToDictionary(x=>x.GetClass(), x=>x);
+                }
+
+                if (s_scriptDependencies == null)
+                {
+                    s_scriptDependencies = scriptsToSort.ToDictionary(
+                        x => x,
+                        y => new HashSet<Type>());
+
+                    foreach (var currentScript in scriptsToSort)
+                    {
+                        var usedTypes = new HashSet<Type>();
+                        var currentClass = currentScript.GetClass();
+                        var currentDeps = s_scriptDependencies[currentScript];
+                        foreach (ScriptExecuteAttribute attribute in currentClass.GetCustomAttributes(
+                            typeof(ScriptExecuteAttribute), true))
+                        {
+                            if (!usedTypes.Add(attribute.RelativeTo)) continue;
+
+                            if(attribute is ScriptExecuteAfterAttribute afterAttrib)
+                            {
+                                currentDeps.Add(afterAttrib.ExecuteAfter);
+                            }
+
+                            if (attribute is ScriptExecuteBeforeAttribute beforeAttrib)
+                            {
+                                if (!s_scriptLookup.TryGetValue(beforeAttrib.ExecuteBefore, out var beforeScript))
+                                {
+                                    Debug.LogWarning($"ScriptExecutionOrder: could not find script for {beforeAttrib.ExecuteBefore.FullName} used in ScriptExecuteBefore for {currentScript.name}");
+                                    continue;
+                                }
+                                s_scriptDependencies[beforeScript].Add(currentClass);
+                            }
+                        }
+                    }
+                }
             }
 
-            Type[] output = null;
-            if (!s_dependencyAttributes.TryGetValue(script, out output))
+            if (s_scriptDependencies.TryGetValue(script, out var output))
             {
-                HashSet<Type> types = new HashSet<Type>();
-
-                var attribs = currentType.GetCustomAttributes(typeof(ScriptDependencyAttribute), true);
-                for(int i=0;i<attribs.Length;++i)
-                {
-                    var dep = attribs[i] as ScriptDependencyAttribute;
-                    if(dep==null) continue;
-
-                    foreach (var depType in dep.GetScriptDependencies())
-                    {
-                        Type[] compatibleTypes;
-                        if (s_compatibleTypes.TryGetValue(depType, out compatibleTypes))
-                        {
-                            types.UnionWith(s_compatibleTypes[depType]);                        
-                        }
-                    }                
-                }
-                s_dependencyAttributes[script] = output = types.ToArray();
-            }         
-            return output;
+                return output;
+            }
+            return new HashSet<Type>();
         }
 
         private static Dictionary<MonoScript, int?> s_fixedOrderAttributes = new Dictionary<MonoScript, int?>();
@@ -541,5 +641,5 @@ namespace Cratesmith.ScriptExecutionOrder
             return false;
         }
     }
-#endif
+    #endif
 }

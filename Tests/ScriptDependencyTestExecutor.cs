@@ -50,23 +50,21 @@ namespace Cratesmith.ScriptExecutionOrder.Tests
             {
                 scriptData.fixedOrderValue = fixedOrderAttribute.order;
             }
-            var dependsOnAttributes =
-                scriptClass.GetCustomAttributes(typeof(ScriptDependencyAttribute), true)
-                    .Cast<ScriptDependencyAttribute>()
-                    .ToArray();
-            foreach (var i in dependsOnAttributes)
-            {
-                var dependsOnTypes = i.GetScriptDependencies()
-                    .Where(x => typeLookup.ContainsKey(x))
-                    .Select(x => typeLookup[x])
-                    .ToArray();
 
-                foreach (var j in dependsOnTypes)
-                {
-                    var dependsOnSD = Init_Script(j);
-                    dependsOnSD.dependedOnBy.Add(scriptData);
-                    scriptData.dependsOn.Add(dependsOnSD);
-                }
+            foreach (ScriptExecuteAfterAttribute i in scriptClass.GetCustomAttributes(typeof(ScriptExecuteAfterAttribute), true))
+            {
+                if (!typeLookup.TryGetValue(i.ExecuteAfter, out var j)) continue;
+                var dependsOnSD = Init_Script(j);
+                dependsOnSD.dependedOnBy.Add(scriptData);
+                scriptData.dependsOn.Add(dependsOnSD);
+            }
+
+            foreach (ScriptExecuteBeforeAttribute i in scriptClass.GetCustomAttributes(typeof(ScriptExecuteBeforeAttribute), true))
+            {
+                if (!typeLookup.TryGetValue(i.ExecuteBefore, out var j)) continue;
+                var dependedOnBySD = Init_Script(j);
+                dependedOnBySD.dependsOn.Add(scriptData);
+                scriptData.dependedOnBy.Add(dependedOnBySD);
             }
 
             return scriptData;
