@@ -2,7 +2,7 @@
 	"name": "com.cratesmith.scriptexecutionorder",
 	"displayName": "Cratesmith.ScriptExecutionOrder",
 	"description": "A dependency based script execution order manager for Unity3d. ",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"unity": "2018.3",
 	"license": "MIT",
 	"repository": {

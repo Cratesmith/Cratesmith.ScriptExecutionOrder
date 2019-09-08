@@ -1,7 +1,7 @@
 ﻿#define SORT_EXECUTION_ORDER
 #define AUTO_SCRIPT_EXECUTION_ORDER
-//#define SORT_ON_ASSETIMPORTER // only use if SORT_ON_SCRIPT_RELOAD is giving issues. May take a second recompile to see changes
-#define SORT_ON_SCRIPT_RELOAD
+#define SORT_ON_ASSETIMPORTER // only use if SORT_ON_SCRIPT_RELOAD is giving issues. May take a second recompile to see changes
+//#define SORT_ON_SCRIPT_RELOAD
 #define LOG_DEBUG
 //#define LOG_DEBUG_VERBOSE
 using System;
@@ -81,6 +81,13 @@ namespace Cratesmith.ScriptExecutionOrder
             private set { EditorPrefs.SetBool(EDITORPREFS_ScriptOrdersChanged, value);}
         }
 
+        const string EDITORPREFS_ScriptsReimported = "ScriptExecutionOrder.ScriptsReimported";
+        public static bool ScriptsReimported
+        {
+            get => EditorPrefs.GetBool(EDITORPREFS_ScriptsReimported, false);
+            private set { EditorPrefs.SetBool(EDITORPREFS_ScriptsReimported, value);}
+        }
+        
         const string EDITORPREFS_LastLoadTime = "ScriptExecutionOrder.LastLoadTime";
         public static float PrefsLastLoadTime
         {
@@ -105,23 +112,38 @@ namespace Cratesmith.ScriptExecutionOrder
         }
 
 #if SORT_ON_ASSETIMPORTER
-    public class Builder : UnityEditor.AssetPostprocessor
-    {
-        static void OnPostprocessAllAssets (string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths) 
+        public class Builder : UnityEditor.AssetPostprocessor
         {
-            if(importedAssets
-                .Concat(movedAssets)
-                .Concat(deletedAssets)
-                .Any(x=> AssetImporter.GetAtPath(x) is MonoImporter))
+            static void OnPostprocessAllAssets (string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths) 
             {
-                PrefsScriptOrdersChanged = false;
-                ProcessAll();
+                ScriptsReimported = false;
+
+                if(importedAssets
+                    .Concat(movedAssets)
+                    .Concat(deletedAssets)
+                    .Any(x=> AssetImporter.GetAtPath(x) is MonoImporter))
+                {
+                    if (PrefsScriptOrdersChanged)
+                    {
+                        PrefsScriptOrdersChanged = false;
+                        Debug.Log("ScriptExecutionOrder: Reloading scripts after an order change, not sorting in case we're in a loop");
+                        return;
+                    }
+                    
+                    ScriptsReimported = true;
+                }
             }
         }
-    }
-#endif
-
-#if SORT_ON_SCRIPT_RELOAD
+        
+        [UnityEditor.Callbacks.DidReloadScripts(-80)]
+        static void ScriptReload()
+        {
+            if (!ScriptsReimported) return;
+            ProcessAll();
+            ScriptsReimported = false;
+        }
+        
+#elif SORT_ON_SCRIPT_RELOAD
         [UnityEditor.Callbacks.DidReloadScripts(-80)]
         static void ScriptReload()
         {
