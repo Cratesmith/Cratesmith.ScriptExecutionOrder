@@ -1,11 +1,11 @@
 ﻿using System.Collections.Generic;
-using System.Linq;
 using Cratesmith.Utils;
-using UnityEditor;
 using UnityEngine;
 using Type = System.Type;
-#if UNITY_EDITOR
 
+#if UNITY_EDITOR
+using UnityEditor;
+using System.Linq;
 #endif
 
 namespace Cratesmith.ScriptExecutionOrder
@@ -43,31 +43,18 @@ namespace Cratesmith.ScriptExecutionOrder
         }
     
 #if UNITY_EDITOR
-        //[UnityEditor.Callbacks.DidReloadScripts(CallbackOrder.SCRIPT_EXECUTION_ORDER_CACHE)]
-        [UnityEditor.Callbacks.DidReloadScripts(0)]
-        static void ProcessScripts()
+        public override void OnRebuildInEditor()
         {
-            if (!UnityEditor.EditorApplication.isPlayingOrWillChangePlaymode)
-            {
-                if (rawInstance != null)
-                {
-                    ProcessDependencies();		        
-                }
-                else
-                {
-                    Debug.Log("ScrpitExecutionOrderCache delaying processing until unity allows existing assets to load");
-                    UnityEditor.EditorApplication.delayCall += ProcessDependencies;
-                }
-            }  
+            // execution order will be correct given that ScriptExecutionOrder is processed at DidReloadScripts -999 and 
+            // Resource singletons are built at (or after) DidReloadScripts -100
+            ProcessDependencies();
         }
 
         private static void ProcessDependencies()
         { 
-            ResourceSingletonBuilder.BuildResourceSingletonsIfDirty();
+            var so = new SerializedObject(instance);
 
-            var so = new UnityEditor.SerializedObject(instance);
-
-            var types = new string[] { ".cs", ".js" };
+            var types = new[] { ".cs", ".js" };
 
             var allScriptPaths = 
                 AssetDatabase.GetAllAssetPaths()
@@ -78,7 +65,7 @@ namespace Cratesmith.ScriptExecutionOrder
 
             for (int i = 0; i < allScriptPaths.Length; ++i)
             {
-                UnityEditor.MonoScript script = UnityEditor.AssetDatabase.LoadAssetAtPath(allScriptPaths[i], typeof(UnityEditor.MonoScript)) as UnityEditor.MonoScript;
+                MonoScript script = AssetDatabase.LoadAssetAtPath(allScriptPaths[i], typeof(MonoScript)) as MonoScript;
 
                 if (!script || script.GetClass() == null) continue;
 
@@ -89,7 +76,7 @@ namespace Cratesmith.ScriptExecutionOrder
                     continue;
                 }
 
-                var typeExecutionOrder = UnityEditor.MonoImporter.GetExecutionOrder(script);
+                var typeExecutionOrder = MonoImporter.GetExecutionOrder(script);
                 if (typeExecutionOrder == 0)
                 {
                     continue;
@@ -104,8 +91,8 @@ namespace Cratesmith.ScriptExecutionOrder
 
             so.Update();
             instance.hideFlags = HideFlags.NotEditable;
-            UnityEditor.EditorUtility.SetDirty(instance);
-            UnityEditor.AssetDatabase.Refresh();      
+            EditorUtility.SetDirty(instance);
+            AssetDatabase.Refresh();      
         }
 #endif
 
@@ -132,9 +119,9 @@ namespace Cratesmith.ScriptExecutionOrder
             }
         }    
         #endregion
-        static System.Type GetType(string name)
+        static Type GetType(string name)
         { 
-            System.Type type = null;
+            Type type = null;
             var assemblies = System.AppDomain.CurrentDomain.GetAssemblies();
             for (int i = 0; i < assemblies.Length; i++)
             {

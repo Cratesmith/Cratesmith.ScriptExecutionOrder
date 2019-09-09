@@ -12,6 +12,6 @@
 	"src": "Packages/Cratesmith.ScriptExecutionOrder",
 	"author": "Kieran Lord <cratesmith@cratesmith.com> (https://github.com/cratesmith)",
 	"dependencies": {
-		"com.cratesmith.utils": "https://github.com/Cratesmith/Cratesmith.Utils#0.0.1-develop"
+		"com.cratesmith.utils": "https://github.com/Cratesmith/Cratesmith.Utils#0.0.2"
 	}
 }

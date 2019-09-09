@@ -107,12 +107,12 @@ namespace Cratesmith.ScriptExecutionOrder
             PrefsScriptOrdersChanged = false;
             PrefsLastLoadTime = (float)EditorApplication.timeSinceStartup;
 #if !SORT_ON_SCRIPT_RELOAD
-        ProcessAll();
+        ProcessAll();  // we always sort scripts on editor load (this handles a special build machine case)
 #endif
         }
 
 #if SORT_ON_ASSETIMPORTER
-        public class Builder : UnityEditor.AssetPostprocessor
+        public class Builder : AssetPostprocessor
         {
             static void OnPostprocessAllAssets (string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths) 
             {
@@ -135,7 +135,7 @@ namespace Cratesmith.ScriptExecutionOrder
             }
         }
         
-        [UnityEditor.Callbacks.DidReloadScripts(-80)]
+        [UnityEditor.Callbacks.DidReloadScripts(-999)]
         static void ScriptReload()
         {
             if (!ScriptsReimported) return;
@@ -144,7 +144,7 @@ namespace Cratesmith.ScriptExecutionOrder
         }
         
 #elif SORT_ON_SCRIPT_RELOAD
-        [UnityEditor.Callbacks.DidReloadScripts(-80)]
+        [Callbacks.DidReloadScripts(-999)]
         static void ScriptReload()
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode) return;
@@ -214,12 +214,8 @@ namespace Cratesmith.ScriptExecutionOrder
         [MenuItem("Tools/Script ExecutionOrder/Trigger Auto Sort")]
         static void ProcessAll()
         {
-        
             var stopwatch = new Stopwatch();
             stopwatch.Start();
-#if LOG_DEBUG
-            Debug.Log("ScriptExecutionOrder: Starting sort");
-#endif
 
             if (!CheckIfNeedsSort())
             {
@@ -229,9 +225,12 @@ namespace Cratesmith.ScriptExecutionOrder
 #endif
                 return;
             }
+#if LOG_DEBUG
+            Debug.Log("ScriptExecutionOrder: Starting sort");
+#endif
         
-            var fixedOrders = new Dictionary<UnityEditor.MonoScript, int>();
-            var allScripts = new List<UnityEditor.MonoScript>();
+            var fixedOrders = new Dictionary<MonoScript, int>();
+            var allScripts = new List<MonoScript>();
             foreach (var script in MonoImporter.GetAllRuntimeMonoScripts())
             {           
                 if(!script || script.GetClass()==null) continue;
@@ -243,7 +242,7 @@ namespace Cratesmith.ScriptExecutionOrder
                 allScripts.Add(script);
             }
              
-            var scriptOrders = new Dictionary<UnityEditor.MonoScript, int>();
+            var scriptOrders = new Dictionary<MonoScript, int>();
             var sortedDeps = SortDependencies(allScripts.ToArray());
             for(int i=0;i<sortedDeps.Count; ++i)
             {
@@ -330,14 +329,14 @@ namespace Cratesmith.ScriptExecutionOrder
             {
                 var script = i.Key;
                 var order = i.Value;
-                var currentOrder = UnityEditor.MonoImporter.GetExecutionOrder(script);
+                var currentOrder = MonoImporter.GetExecutionOrder(script);
                 if(order != currentOrder && script != null) 
                 {
                     try
                     {
                         scriptOrderChanged = true;
                         Debug.LogFormat("ScriptExecutionOrder: Order changed. Script:{0} PrevOrder:{1} NewOrder:{2}", script.name, currentOrder, order);
-                        UnityEditor.MonoImporter.SetExecutionOrder(script, order);
+                        MonoImporter.SetExecutionOrder(script, order);
                     }
                     catch (Exception e)
                     {                    
@@ -361,12 +360,12 @@ namespace Cratesmith.ScriptExecutionOrder
         /// <summary>
         /// Sort the scripts by dependencies 
         /// </summary>
-        static List<IslandItem[]> SortDependencies(UnityEditor.MonoScript[] scriptsToSort)
+        static List<IslandItem[]> SortDependencies(MonoScript[] scriptsToSort)
         {
-            var lookup = new Dictionary<Type, UnityEditor.MonoScript>();
-            var visited = new HashSet<UnityEditor.MonoScript>();
-            var sortedItems = new List<UnityEditor.MonoScript>();
-            var connections = new Dictionary<UnityEditor.MonoScript, HashSet<UnityEditor.MonoScript>>();
+            var lookup = new Dictionary<Type, MonoScript>();
+            var visited = new HashSet<MonoScript>();
+            var sortedItems = new List<MonoScript>();
+            var connections = new Dictionary<MonoScript, HashSet<MonoScript>>();
 
             // sort input (to ensure we're deterministic and to ensure order of fixed items)
             Array.Sort(scriptsToSort, (x, y) => {
@@ -402,7 +401,7 @@ namespace Cratesmith.ScriptExecutionOrder
                     if(!lookup.TryGetValue(depType, out depScript)) continue;
 
                     // forward
-                    HashSet<UnityEditor.MonoScript> forwardSet = null;
+                    HashSet<MonoScript> forwardSet = null;
                     if (!connections.TryGetValue(script, out forwardSet))
                     {
                         connections[script] = forwardSet = new HashSet<MonoScript>();
@@ -410,7 +409,7 @@ namespace Cratesmith.ScriptExecutionOrder
                     forwardSet.Add(depScript);
                 
                     // reverse
-                    HashSet<UnityEditor.MonoScript> reverseSet = null;
+                    HashSet<MonoScript> reverseSet = null;
                     if (!connections.TryGetValue(depScript, out reverseSet))
                     {
                         connections[depScript] = reverseSet = new HashSet<MonoScript>();
@@ -459,31 +458,31 @@ namespace Cratesmith.ScriptExecutionOrder
 
         struct IslandItem
         {
-            public UnityEditor.MonoScript script;
+            public MonoScript script;
             public bool isLeaf;
         }
 
         /// <summary>
         /// Create graph islands from the non directed dependency graph
         /// </summary>
-        static List<IslandItem[]> SortDependencies_CreateGraphIslands(List<UnityEditor.MonoScript> scriptsToSort, 
-            Dictionary<UnityEditor.MonoScript, HashSet<UnityEditor.MonoScript>> connections)
+        static List<IslandItem[]> SortDependencies_CreateGraphIslands(List<MonoScript> scriptsToSort, 
+            Dictionary<MonoScript, HashSet<MonoScript>> connections)
         {
             var output = new List<IslandItem[]>(); 
-            var remainingSet = new List<UnityEditor.MonoScript>(scriptsToSort);
-            var leaves = new HashSet<UnityEditor.MonoScript>();
+            var remainingSet = new List<MonoScript>(scriptsToSort);
+            var leaves = new HashSet<MonoScript>();
 
             while (remainingSet.Any())
             {
-                var graphComponentSet = new HashSet<UnityEditor.MonoScript>();
-                var openSet = new HashSet<UnityEditor.MonoScript>();
+                var graphComponentSet = new HashSet<MonoScript>();
+                var openSet = new HashSet<MonoScript>();
                 var current = remainingSet.First();
                 while (current != null)
                 {
                     openSet.Remove(current);
                     remainingSet.Remove(current);
                     graphComponentSet.Add(current);
-                    HashSet<UnityEditor.MonoScript> currentConnections = null;
+                    HashSet<MonoScript> currentConnections = null;
                     if (connections.TryGetValue(current, out currentConnections))
                     {
                         foreach (var connection in currentConnections)
@@ -519,12 +518,12 @@ namespace Cratesmith.ScriptExecutionOrder
         /// Visit this script and all dependencies (adding them recursively to the sorted list).
         /// This also builds a connections table that can be used as a nondirected graph of dependencies
         /// </summary>
-        static void SortDependencies_Visit( UnityEditor.MonoScript current,
-            HashSet<UnityEditor.MonoScript> visited,
-            List<UnityEditor.MonoScript> sortedItems,
-            Dictionary<Type, UnityEditor.MonoScript> lookup,
-            UnityEditor.MonoScript visitedBy,
-            Dictionary<UnityEditor.MonoScript, HashSet<UnityEditor.MonoScript>> connections
+        static void SortDependencies_Visit( MonoScript current,
+            HashSet<MonoScript> visited,
+            List<MonoScript> sortedItems,
+            Dictionary<Type, MonoScript> lookup,
+            MonoScript visitedBy,
+            Dictionary<MonoScript, HashSet<MonoScript>> connections
         )
         {            
             if(visited.Add(current))  
@@ -614,7 +613,7 @@ namespace Cratesmith.ScriptExecutionOrder
         /// <summary>
         /// Does this script have dependencies?
         /// </summary>
-        static bool HasDependencies(UnityEditor.MonoScript script)
+        static bool HasDependencies(MonoScript script)
         {
             return GetScriptDependencies(script).Count > 0;
         }
@@ -622,7 +621,7 @@ namespace Cratesmith.ScriptExecutionOrder
         /// <summary>
         /// Does this script have fixed order?
         /// </summary>
-        static bool HasFixedOrder(UnityEditor.MonoScript script)
+        static bool HasFixedOrder(MonoScript script)
         {
             int output = 0;
             return GetFixedOrder(script, out output);
@@ -635,7 +634,7 @@ namespace Cratesmith.ScriptExecutionOrder
         private static Dictionary<Type, Type[]> s_compatibleTypes = null;
         private static Dictionary<Type, MonoScript> s_scriptLookup = null;
 
-        static HashSet<Type> GetScriptDependencies( UnityEditor.MonoScript script)
+        static HashSet<Type> GetScriptDependencies( MonoScript script)
         {
             if(script==null) return new HashSet<Type>();
 
@@ -714,7 +713,7 @@ namespace Cratesmith.ScriptExecutionOrder
 
             if (!s_fixedOrderAttributes.TryGetValue(script, out value))
             {
-                var order = UnityEditor.MonoImporter.GetExecutionOrder(script);
+                var order = MonoImporter.GetExecutionOrder(script);
                 output = order;
 
                 var attrib = script.GetClass().GetCustomAttributes(typeof(ScriptExecutionOrderAttribute), true).Cast<ScriptExecutionOrderAttribute>().FirstOrDefault();
