@@ -13,6 +13,6 @@
 	"author": "Kieran Lord <cratesmith@cratesmith.com> (https://github.com/cratesmith)",
 	"dependencies": {
 		"com.cratesmith.collections": "0.0.3",
-		"com.cratesmith.utils": "https://github.com/Cratesmith/Cratesmith.Utils#0.0.3"
+		"com.cratesmith.utils": "0.0.3"
 	}
 }
